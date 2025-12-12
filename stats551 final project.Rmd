@@ -1,0 +1,555 @@
+---
+title: "Stats551 final project"
+output: pdf_document
+date: "2025-12-10"
+---
+
+# Model 1
+```{r}
+obj <- load('NSDUH_2023.Rdata')
+nsduh <- get(obj[2])
+nsduh$SUD_ANY <- ifelse(
+  nsduh$SVYRSUDANY %in% c(1, 2, 3), 1,
+  ifelse(nsduh$SVYRSUDANY == 4, 0, NA)
+)
+
+
+dat <- nsduh[, c("KSSLR6MONED", "SUD_ANY")]
+names(dat)[names(dat) == "KSSLR6MONED"] <- "K6"
+
+
+dat <- dat[complete.cases(dat), ]
+
+dat <- subset(dat, K6 >= 0 & K6 <= 24)
+
+
+dat$K6      <- as.numeric(dat$K6)
+dat$SUD_ANY <- as.numeric(dat$SUD_ANY)
+
+
+y0 <- dat$K6[dat$SUD_ANY == 0]  # 无 SUD 组
+y1 <- dat$K6[dat$SUD_ANY == 1]  # 有 SUD 组
+
+n0 <- length(y0)
+n1 <- length(y1)
+
+cat("n0 (no SUD) =", n0, "\n")
+cat("n1 (any SUD) =", n1, "\n")
+
+
+
+
+m0    <- 12     
+s0_sq <- 25      
+a0 <- 2         
+b0 <- 10        
+
+
+set.seed(123)
+
+n_iter  <- 20000
+burn_in <- 5000
+
+mu0_chain    <- numeric(n_iter)
+mu1_chain    <- numeric(n_iter)
+sigma2_chain <- numeric(n_iter)
+
+mu0_chain[1]    <- mean(y0)
+mu1_chain[1]    <- mean(y1)
+sigma2_chain[1] <- var(c(y0, y1))
+
+
+
+for (s in 2:n_iter) {
+
+  mu0_prev    <- mu0_chain[s - 1]
+  mu1_prev    <- mu1_chain[s - 1]
+  sigma2_prev <- sigma2_chain[s - 1]
+
+  y0_bar <- mean(y0)
+  v0_post <- 1 / (1 / s0_sq + n0 / sigma2_prev)
+  m0_post <- v0_post * (m0 / s0_sq + n0 * y0_bar / sigma2_prev)
+  mu0_new <- rnorm(1, mean = m0_post, sd = sqrt(v0_post))
+
+  y1_bar <- mean(y1)
+  v1_post <- 1 / (1 / s0_sq + n1 / sigma2_prev)
+  m1_post <- v1_post * (m0 / s0_sq + n1 * y1_bar / sigma2_prev)
+  mu1_new <- rnorm(1, mean = m1_post, sd = sqrt(v1_post))
+
+  SSE0 <- sum((y0 - mu0_new)^2)
+  SSE1 <- sum((y1 - mu1_new)^2)
+  SSE  <- SSE0 + SSE1
+
+  a_post <- a0 + (n0 + n1) / 2
+  b_post <- b0 + 0.5 * SSE
+
+  tau_new    <- rgamma(1, shape = a_post, rate = b_post)
+  sigma2_new <- 1 / tau_new
+
+  mu0_chain[s]    <- mu0_new
+  mu1_chain[s]    <- mu1_new
+  sigma2_chain[s] <- sigma2_new
+}
+
+
+keep <- (burn_in + 1):n_iter
+
+mu0_post    <- mu0_chain[keep]
+mu1_post    <- mu1_chain[keep]
+sigma2_post <- sigma2_chain[keep]
+
+delta_post <- mu1_post - mu0_post
+
+mean_mu0    <- mean(mu0_post)
+mean_mu1    <- mean(mu1_post)
+mean_delta  <- mean(delta_post)
+
+ci_mu0   <- quantile(mu0_post,   probs = c(0.025, 0.975))
+ci_mu1   <- quantile(mu1_post,   probs = c(0.025, 0.975))
+ci_delta <- quantile(delta_post, probs = c(0.025, 0.975))
+
+# P(delta > 0 | data)
+prob_delta_gt0 <- mean(delta_post > 0)
+
+cat("\nPosterior summary:\n")
+cat("mu0 (No SUD)   mean =", mean_mu0, 
+    ", 95% CI =", ci_mu0[1], ",", ci_mu0[2], "\n")
+cat("mu1 (Any SUD)  mean =", mean_mu1, 
+    ", 95% CI =", ci_mu1[1], ",", ci_mu1[2], "\n")
+cat("delta = mu1 - mu0  mean =", mean_delta, 
+    ", 95% CI =", ci_delta[1], ",", ci_delta[2], "\n")
+cat("P(delta > 0 | data) =", prob_delta_gt0, "\n")
+
+
+par(mfrow = c(1, 3))
+hist(mu0_post,  main = expression(mu[0]), xlab = "mu0 (No SUD)",  breaks = 30)
+hist(mu1_post,  main = expression(mu[1]), xlab = "mu1 (Any SUD)", breaks = 30)
+hist(delta_post, main = expression(delta == mu[1] - mu[0]), 
+     xlab = "delta", breaks = 30)
+par(mfrow = c(1, 1))
+
+```
+# Model 2
+```{r}
+
+dat2 <- nsduh[, c("SVYRSUDANY", "KSSLR6MONED")]
+names(dat2)[names(dat2) == "KSSLR6MONED"] <- "K6"
+
+dat2 <- subset(dat2, SVYRSUDANY %in% c(1, 2, 3, 4))
+
+dat2 <- dat2[complete.cases(dat2), ]
+
+dat2$K6          <- as.numeric(dat2$K6)
+dat2$SVYRSUDANY  <- as.numeric(dat2$SVYRSUDANY)
+
+dat2 <- subset(dat2, K6 >= 0 & K6 <= 24)
+
+dat2$SEV_GRP <- dat2$SVYRSUDANY   
+
+table(dat2$SEV_GRP)
+
+J <- 4  
+y_list <- vector("list", J)
+n_j    <- numeric(J)
+ybar_j <- numeric(J)
+
+for (j in 1:J) {
+  y_j        <- dat2$K6[dat2$SEV_GRP == j]
+  y_list[[j]] <- y_j
+  n_j[j]      <- length(y_j)
+  ybar_j[j]   <- mean(y_j)
+}
+
+N_total <- sum(n_j)
+
+cat("Group sizes (Mild, Moderate, Severe, None):\n")
+print(n_j)
+
+
+m00     <- 12       
+s00_sq  <- 100       
+a_sigma <- 2         
+b_sigma <- 10
+a_tau   <- 2        
+b_tau   <- 10
+
+
+set.seed(1234)
+
+n_iter  <- 20000
+burn_in <- 5000
+
+mu_j_chain    <- matrix(NA, nrow = n_iter, ncol = J)  
+mu0_chain     <- numeric(n_iter)
+sigma2_chain  <- numeric(n_iter)
+tau2_chain    <- numeric(n_iter)
+
+mu_j_chain[1, ]   <- ybar_j
+mu0_chain[1]      <- mean(ybar_j)
+sigma2_chain[1]   <- var(dat2$K6)
+tau2_chain[1]     <- var(ybar_j) + 0.01 
+
+
+for (s in 2:n_iter) {
+
+  mu_j_prev   <- mu_j_chain[s - 1, ]
+  mu0_prev    <- mu0_chain[s - 1]
+  sigma2_prev <- sigma2_chain[s - 1]
+  tau2_prev   <- tau2_chain[s - 1]
+
+  mu_j_new <- numeric(J)
+  for (j in 1:J) {
+    vj_post <- 1 / (n_j[j] / sigma2_prev + 1 / tau2_prev)
+    mj_post <- vj_post * ( n_j[j] * ybar_j[j] / sigma2_prev + mu0_prev / tau2_prev )
+    mu_j_new[j] <- rnorm(1, mean = mj_post, sd = sqrt(vj_post))
+  }
+
+  v0_post <- 1 / (J / tau2_prev + 1 / s00_sq)
+  m0_post <- v0_post * (sum(mu_j_new) / tau2_prev + m00 / s00_sq)
+  mu0_new <- rnorm(1, mean = m0_post, sd = sqrt(v0_post))
+
+  # sigma^2 | mu_j, y ~ Inv-Gamma(a_sigma + N/2, b_sigma + 0.5 * SSE)
+  # SSE = sum_j sum_i (y_ij - mu_j)^2
+
+  SSE <- 0
+  for (j in 1:J) {
+    y_j <- y_list[[j]]
+    SSE <- SSE + sum((y_j - mu_j_new[j])^2)
+  }
+
+  a_sigma_post <- a_sigma + N_total / 2
+  b_sigma_post <- b_sigma + 0.5 * SSE
+
+ # tau_sigma = 1/sigma^2 ~ Gamma(a_sigma_post, rate = b_sigma_post)
+  tau_sigma   <- rgamma(1, shape = a_sigma_post, rate = b_sigma_post)
+  sigma2_new  <- 1 / tau_sigma
+
+  # tau^2 | mu_j, mu0 ~ Inv-Gamma(a_tau + J/2, b_tau + 0.5 * sum_j (mu_j - mu0)^2)
+
+  SStau <- sum((mu_j_new - mu0_new)^2)
+
+  a_tau_post <- a_tau + J / 2
+  b_tau_post <- b_tau + 0.5 * SStau
+
+  tau_tau  <- rgamma(1, shape = a_tau_post, rate = b_tau_post)
+  tau2_new <- 1 / tau_tau
+  
+  mu_j_chain[s, ]   <- mu_j_new
+  mu0_chain[s]      <- mu0_new
+  sigma2_chain[s]   <- sigma2_new
+  tau2_chain[s]     <- tau2_new
+}
+
+
+keep <- (burn_in + 1):n_iter
+
+mu_j_post   <- mu_j_chain[keep, ]
+mu0_post    <- mu0_chain[keep]
+sigma2_post <- sigma2_chain[keep]
+tau2_post   <- tau2_chain[keep]
+
+group_labels <- c("Mild", "Moderate", "Severe", "NoDisorder")
+
+post_mu_j <- data.frame(
+  group = group_labels,
+  mean  = apply(mu_j_post, 2, mean),
+  low   = apply(mu_j_post, 2, quantile, probs = 0.025),
+  high  = apply(mu_j_post, 2, quantile, probs = 0.975)
+)
+
+post_mu_j
+
+# overall hyper-mean mu0
+mean_mu0 <- mean(mu0_post)
+ci_mu0   <- quantile(mu0_post, probs = c(0.025, 0.975))
+
+cat("\nPosterior for overall mean mu0:\n")
+cat("mean =", mean_mu0, ", 95% CI =", ci_mu0[1], ",", ci_mu0[2], "\n")
+
+delta_sev_none <- mu_j_post[, 3] - mu_j_post[, 4]
+mean_delta_SN  <- mean(delta_sev_none)
+ci_delta_SN    <- quantile(delta_sev_none, probs = c(0.025, 0.975))
+prob_SN_gt0    <- mean(delta_sev_none > 0)
+
+cat("\nSevere - NoDisorder:\n")
+cat("posterior mean =", mean_delta_SN,
+    ", 95% CI =", ci_delta_SN[1], ",", ci_delta_SN[2], "\n")
+cat("P(Severe > NoDisorder | data) =", prob_SN_gt0, "\n")
+
+
+
+raw_means <- ybar_j
+
+post_means <- post_mu_j$mean
+
+plot(
+  raw_means, post_means,
+  xlab = "Raw group mean K6",
+  ylab = "Posterior mean K6 (hierarchical)",
+  main = "Shrinkage of group means by SUD severity",
+  pch  = 19
+)
+abline(0, 1, lty = 2)   
+
+text(raw_means, post_means, labels = group_labels, pos = 3, cex = 0.8)
+
+group_labels <- c("Mild", "Moderate", "Severe", "NoDisorder")
+ltys <- c(1, 2, 3, 4)
+
+post_mean_mu <- apply(mu_j_post, 2, mean)  # 长度=4，对应 j=1..4
+
+dens_list <- lapply(1:J, function(j) density(y_list[[j]], from = 0, to = 24, n = 512))
+
+ymax <- max(sapply(dens_list, function(d) max(d$y)))
+
+png("k6_by_severity.png", width = 1200, height = 800, res = 150)
+
+plot(dens_list[[1]],
+     xlim = c(0, 24), ylim = c(0, ymax),
+     main = "K6 Distributions by SUD Severity (Model 2)",
+     xlab = "K6 Total Score", ylab = "Density",
+     col = "black", lty = ltys[1], lwd = 2)
+
+if (J >= 2) {
+  for (j in 2:J) {
+    lines(dens_list[[j]], col = "black", lty = ltys[j], lwd = 2)
+  }
+}
+
+for (j in 1:J) {
+  abline(v = post_mean_mu[j], col = "black", lty = ltys[j], lwd = 2)
+}
+
+legend("topright",
+       legend = paste0(group_labels, " (post mean line)"),
+       lty = ltys, lwd = 2, col = "black", bty = "n")
+
+dev.off()
+
+cat("Saved: k6_by_severity.png\n")
+
+```
+# Model 3
+```{r}
+dat3 <- nsduh[, c("ALCYR", "ILLYR", "TOBVNICYR", "KSSLR6MONED")]
+names(dat3)[names(dat3) == "KSSLR6MONED"] <- "K6"
+
+
+dat3 <- dat3[complete.cases(dat3), ]
+
+dat3 <- subset(dat3,
+               ALCYR %in% c(0, 1) &
+               ILLYR %in% c(0, 1) &
+               TOBVNICYR %in% c(0, 1))
+
+dat3$ALCYR      <- as.numeric(dat3$ALCYR)
+dat3$ILLYR      <- as.numeric(dat3$ILLYR)
+dat3$TOBVNICYR  <- as.numeric(dat3$TOBVNICYR)
+dat3$K6         <- as.numeric(dat3$K6)
+
+dat3 <- subset(dat3, K6 >= 0 & K6 <= 24)
+
+dat3$N_USE <- dat3$ALCYR + dat3$ILLYR + dat3$TOBVNICYR
+
+# 1 = None         (0,0,0)
+# 2 = Alcohol only (1,0,0)
+# 3 = Illicit only (0,1,0)
+# 4 = Tobacco only (0,0,1)
+# 5 = Poly use     (N_USE >= 2)
+dat3$USE_PATTERN <- NA_integer_
+
+dat3$USE_PATTERN[dat3$N_USE == 0] <-
+  1  # none
+
+dat3$USE_PATTERN[dat3$N_USE == 1 & dat3$ALCYR == 1] <-
+  2  # alcohol only
+
+dat3$USE_PATTERN[dat3$N_USE == 1 & dat3$ILLYR == 1] <-
+  3  # illicit only
+
+dat3$USE_PATTERN[dat3$N_USE == 1 & dat3$TOBVNICYR == 1] <-
+  4  # tobacco only
+
+dat3$USE_PATTERN[dat3$N_USE >= 2] <-
+  5  # poly use
+
+dat3 <- dat3[!is.na(dat3$USE_PATTERN), ]
+
+table(dat3$USE_PATTERN)
+
+J <- 5  
+y_list <- vector("list", J)
+n_j    <- numeric(J)
+ybar_j <- numeric(J)
+
+for (j in 1:J) {
+  y_j         <- dat3$K6[dat3$USE_PATTERN == j]
+  y_list[[j]] <- y_j
+  n_j[j]      <- length(y_j)
+  ybar_j[j]   <- mean(y_j)
+}
+
+N_total <- sum(n_j)
+
+cat("Group sizes (None, Alcohol, Illicit, Tobacco, Poly):\n")
+print(n_j)
+
+
+# mu_k | mu0, tau^2 ~ N(mu0, tau^2)
+# mu0 ~ N(m00, s00^2)
+# sigma^2 ~ Inv-Gamma(a_sigma, b_sigma)
+# tau^2   ~ Inv-Gamma(a_tau,   b_tau)
+
+m00     <- 12        # overall mean prior center
+s00_sq  <- 100       # vague prior for mu0
+a_sigma <- 2         # weakly informative priors
+b_sigma <- 10
+a_tau   <- 2
+b_tau   <- 10
+
+set.seed(2025)
+
+n_iter  <- 20000
+burn_in <- 5000
+
+mu_k_chain   <- matrix(NA, nrow = n_iter, ncol = J)  
+mu0_chain    <- numeric(n_iter)
+sigma2_chain <- numeric(n_iter)
+tau2_chain   <- numeric(n_iter)
+
+mu_k_chain[1, ] <- ybar_j
+mu0_chain[1]    <- mean(ybar_j)
+sigma2_chain[1] <- var(dat3$K6)
+tau2_chain[1]   <- var(ybar_j) + 0.01
+
+
+for (s in 2:n_iter) {
+
+  mu_k_prev   <- mu_k_chain[s - 1, ]
+  mu0_prev    <- mu0_chain[s - 1]
+  sigma2_prev <- sigma2_chain[s - 1]
+  tau2_prev   <- tau2_chain[s - 1]
+
+  mu_k_new <- numeric(J)
+  for (k in 1:J) {
+    v_k_post <- 1 / (n_j[k] / sigma2_prev + 1 / tau2_prev)
+    m_k_post <- v_k_post * (n_j[k] * ybar_j[k] / sigma2_prev + mu0_prev / tau2_prev)
+    mu_k_new[k] <- rnorm(1, mean = m_k_post, sd = sqrt(v_k_post))
+  }
+
+  v0_post <- 1 / (J / tau2_prev + 1 / s00_sq)
+  m0_post <- v0_post * (sum(mu_k_new) / tau2_prev + m00 / s00_sq)
+  mu0_new <- rnorm(1, mean = m0_post, sd = sqrt(v0_post))
+
+  SSE <- 0
+  for (k in 1:J) {
+    y_k <- y_list[[k]]
+    SSE <- SSE + sum((y_k - mu_k_new[k])^2)
+  }
+
+  a_sigma_post <- a_sigma + N_total / 2
+  b_sigma_post <- b_sigma + 0.5 * SSE
+
+  tau_sigma   <- rgamma(1, shape = a_sigma_post, rate = b_sigma_post)
+  sigma2_new  <- 1 / tau_sigma
+
+  SS_tau    <- sum((mu_k_new - mu0_new)^2)
+  a_tau_post <- a_tau + J / 2
+  b_tau_post <- b_tau + 0.5 * SS_tau
+
+  tau_tau  <- rgamma(1, shape = a_tau_post, rate = b_tau_post)
+  tau2_new <- 1 / tau_tau
+
+  mu_k_chain[s, ]   <- mu_k_new
+  mu0_chain[s]      <- mu0_new
+  sigma2_chain[s]   <- sigma2_new
+  tau2_chain[s]     <- tau2_new
+}
+
+
+keep <- (burn_in + 1):n_iter
+
+mu_k_post   <- mu_k_chain[keep, ]
+mu0_post    <- mu0_chain[keep]
+sigma2_post <- sigma2_chain[keep]
+tau2_post   <- tau2_chain[keep]
+
+pattern_labels <- c("None", "AlcoholOnly", "IllicitOnly", "TobaccoOnly", "PolyUse")
+
+post_mu_k <- data.frame(
+  pattern = pattern_labels,
+  mean    = apply(mu_k_post, 2, mean),
+  low     = apply(mu_k_post, 2, quantile, probs = 0.025),
+  high    = apply(mu_k_post, 2, quantile, probs = 0.975)
+)
+
+post_mu_k
+
+# overall hyper-mean mu0
+mean_mu0 <- mean(mu0_post)
+ci_mu0   <- quantile(mu0_post, probs = c(0.025, 0.975))
+
+cat("\nPosterior for overall mean mu0 (use patterns):\n")
+cat("mean =", mean_mu0, ", 95% CI =", ci_mu0[1], ",", ci_mu0[2], "\n")
+
+delta_poly_none <- mu_k_post[, 5] - mu_k_post[, 1]
+mean_delta_PN   <- mean(delta_poly_none)
+ci_delta_PN     <- quantile(delta_poly_none, probs = c(0.025, 0.975))
+prob_PN_gt0     <- mean(delta_poly_none > 0)
+
+cat("\nPolyUse - None:\n")
+cat("posterior mean =", mean_delta_PN,
+    ", 95% CI =", ci_delta_PN[1], ",", ci_delta_PN[2], "\n")
+cat("P(PolyUse > None | data) =", prob_PN_gt0, "\n")
+
+
+raw_means  <- ybar_j
+post_means <- post_mu_k$mean
+
+plot(
+  raw_means, post_means,
+  xlab = "Raw group mean K6",
+  ylab = "Posterior mean K6 (hierarchical)",
+  main = "Shrinkage of group means by use pattern",
+  pch  = 19
+)
+abline(0, 1, lty = 2)
+text(raw_means, post_means, labels = pattern_labels, pos = 3, cex = 0.8)
+
+pattern_labels <- c("None", "AlcoholOnly", "IllicitOnly", "TobaccoOnly", "PolyUse")
+ltys <- c(1, 2, 3, 4, 5)
+
+post_mean_mu <- apply(mu_k_post, 2, mean)  # 长度=5，对应 k=1..5
+
+dens_list <- lapply(1:J, function(k) density(y_list[[k]], from = 0, to = 24, n = 512))
+
+ymax <- max(sapply(dens_list, function(d) max(d$y)))
+
+png("k6_by_pattern.png", width = 1200, height = 800, res = 150)
+
+plot(dens_list[[1]],
+     xlim = c(0, 24), ylim = c(0, ymax),
+     main = "K6 Distributions by Substance Use Pattern (Model 3)",
+     xlab = "K6 Total Score", ylab = "Density",
+     col = "black", lty = ltys[1], lwd = 2)
+
+if (J >= 2) {
+  for (k in 2:J) {
+    lines(dens_list[[k]], col = "black", lty = ltys[k], lwd = 2)
+  }
+}
+
+for (k in 1:J) {
+  abline(v = post_mean_mu[k], col = "black", lty = ltys[k], lwd = 2)
+}
+
+legend("topright",
+       legend = paste0(pattern_labels, " (post mean line)"),
+       lty = ltys, lwd = 2, col = "black", bty = "n")
+
+dev.off()
+
+cat("Saved: k6_by_pattern.png\n")
+
+```
+
